@@ -20,19 +20,19 @@ echo "✅ Created /tmp/uploads directory"
 
 # Start microservices in background
 echo "🔧 Starting OCR Service (port 8001)..."
-cd /app/backend && PYTHONPATH=/app/backend python3 -m uvicorn ocr_service.main:app \
+PYTHONPATH=$PWD python3 -m uvicorn ocr_service.main:app \
   --host 0.0.0.0 --port 8001 --log-level warning &
 
 echo "🔧 Starting Drug Extractor Service (port 8002)..."
-cd /app/backend && PYTHONPATH=/app/backend python3 -m uvicorn drug_extractor.main:app \
+PYTHONPATH=$PWD python3 -m uvicorn drug_extractor.main:app \
   --host 0.0.0.0 --port 8002 --log-level warning &
 
 echo "🔧 Starting Drug Info Service (port 8003)..."
-cd /app/backend && PYTHONPATH=/app/backend python3 -m uvicorn drug_info_service.main:app \
+PYTHONPATH=$PWD python3 -m uvicorn drug_info_service.main:app \
   --host 0.0.0.0 --port 8003 --log-level warning &
 
 echo "🔧 Starting Audit Service (port 8004)..."
-cd /app/backend && PYTHONPATH=/app/backend python3 -m uvicorn audit_service.main:app \
+PYTHONPATH=$PWD python3 -m uvicorn audit_service.main:app \
   --host 0.0.0.0 --port 8004 --log-level warning &
 
 # Wait for services to initialize
@@ -41,5 +41,5 @@ sleep 5
 
 # Start API Gateway in foreground (this keeps the container running)
 echo "🚀 Starting API Gateway on port $PORT..."
-cd /app/backend && PYTHONPATH=/app/backend exec python3 -m uvicorn gateway.main:app \
+PYTHONPATH=$PWD exec python3 -m uvicorn gateway.main:app \
   --host 0.0.0.0 --port $PORT --log-level info
