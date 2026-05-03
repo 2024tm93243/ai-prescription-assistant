@@ -54,6 +54,15 @@
   color: white;
 }
 
+.bot-name {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #4f46e5;
+  margin-bottom: 0.25rem;
+  letter-spacing: 0.05em;
+}
+
 .message-content p {
   margin: 0;
   font-size: 0.9rem;

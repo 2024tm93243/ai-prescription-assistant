@@ -14,7 +14,7 @@ function App() {
     {
       id: 1,
       type: 'bot',
-      content: 'Hello! I can help you understand your medications. You can either upload a prescription image OR type a drug name directly to learn about it.',
+      content: 'Hello! I am NJ, your prescription assistant. I can help you understand your medications. You can either upload a prescription image OR type a drug name directly to learn about it.',
     },
   ]);
   const [prescriptionData, setPrescriptionData] = useState(null);

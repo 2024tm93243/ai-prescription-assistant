@@ -66,6 +66,7 @@ function ChatInterface({
               {message.type === 'user' ? '👤' : '🤖'}
             </div>
             <div className="message-content">
+              {message.type === 'bot' && <span className="bot-name">NJ</span>}
               <p>{message.content}</p>
             </div>
           </div>
