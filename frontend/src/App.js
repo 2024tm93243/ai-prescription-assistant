@@ -64,11 +64,8 @@ function App() {
       );
     } catch (err) {
       console.error('Drug info error:', err);
-      addMessage(
-        'bot',
-        `Sorry, I couldn't find information for "${drugName}". Please check the spelling or try another drug name.`,
-        { type: 'error' }
-      );
+      const msg = err.userMessage || `Sorry, I couldn't find information for "${drugName}". Please check the spelling or try another drug name.`;
+      addMessage('bot', msg, { type: 'error' });
     } finally {
       setIsLoadingDrugInfo(false);
     }
@@ -178,7 +175,7 @@ function App() {
       }
     } catch (err) {
       console.error('Upload error:', err);
-      const errorMessage = err.response?.data?.detail || err.message || 'Failed to process prescription';
+      const errorMessage = err.userMessage || err.response?.data?.detail || err.message || 'Failed to process prescription';
       addMessage('bot', `Error: ${errorMessage}`, { type: 'error' });
     } finally {
       setIsLoading(false);

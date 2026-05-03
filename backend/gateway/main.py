@@ -60,50 +60,68 @@ prescription_sessions: Dict[str, dict] = {}
 
 async def call_ocr_service(file_content: bytes, filename: str) -> dict:
     """Call OCR Service to process prescription image."""
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        files = {"file": (filename, file_content)}
-        response = await client.post(
-            f"{settings.OCR_SERVICE_URL}/ocr",
-            files=files
-        )
-        if response.status_code != 200:
-            raise HTTPException(
-                status_code=response.status_code,
-                detail=f"OCR Service error: {response.text}"
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            files = {"file": (filename, file_content)}
+            response = await client.post(
+                f"{settings.OCR_SERVICE_URL}/ocr",
+                files=files
             )
-        return response.json()
+            if response.status_code != 200:
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail=f"OCR Service error: {response.text}"
+                )
+            return response.json()
+    except httpx.TimeoutException:
+        raise HTTPException(
+            status_code=504,
+            detail="OCR service timed out. The image may be too complex or the service is busy. Please try again."
+        )
 
 
 async def call_drug_extractor(ocr_result: dict) -> dict:
     """Call Drug Extractor Service to parse OCR output."""
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.post(
-            f"{settings.DRUG_EXTRACTOR_URL}/extract",
-            json={
-                "lines": ocr_result.get("lines", []),
-                "raw_text": ocr_result.get("raw_text", "")
-            }
-        )
-        if response.status_code != 200:
-            raise HTTPException(
-                status_code=response.status_code,
-                detail=f"Drug Extractor error: {response.text}"
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{settings.DRUG_EXTRACTOR_URL}/extract",
+                json={
+                    "lines": ocr_result.get("lines", []),
+                    "raw_text": ocr_result.get("raw_text", "")
+                }
             )
-        return response.json()
+            if response.status_code != 200:
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail=f"Drug Extractor error: {response.text}"
+                )
+            return response.json()
+    except httpx.TimeoutException:
+        raise HTTPException(
+            status_code=504,
+            detail="Drug extraction timed out. Please try again."
+        )
 
 
 async def call_drug_info_service(drug_name: str) -> dict:
     """Call Drug Info Service to get educational information."""
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        response = await client.get(
-            f"{settings.DRUG_INFO_SERVICE_URL}/drug-info/{drug_name}"
-        )
-        if response.status_code != 200:
-            raise HTTPException(
-                status_code=response.status_code,
-                detail=f"Drug Info Service error: {response.text}"
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.get(
+                f"{settings.DRUG_INFO_SERVICE_URL}/drug-info/{drug_name}"
             )
-        return response.json()
+            if response.status_code != 200:
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail=f"Drug Info Service error: {response.text}"
+                )
+            return response.json()
+    except httpx.TimeoutException:
+        raise HTTPException(
+            status_code=504,
+            detail="Drug info service timed out. The AI model is taking too long. Please try again."
+        )
 
 
 # ============ API Endpoints ============

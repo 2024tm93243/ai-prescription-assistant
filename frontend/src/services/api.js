@@ -11,11 +11,28 @@ const API_BASE_URL = process.env.REACT_APP_API_URL || '';
 // Create axios instance with default config
 const api = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 120000, // 2 minutes for OCR processing
+  timeout: 150000, // 2.5 minutes for OCR processing
   headers: {
     'Content-Type': 'application/json',
   },
 });
+
+// Intercept errors and provide user-friendly timeout messages
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.code === 'ECONNABORTED' || error.message?.includes('timeout')) {
+      error.userMessage = 'The request timed out. The server is taking too long to respond. Please try again.';
+    } else if (error.response?.status === 504) {
+      error.userMessage = error.response.data?.detail || 'Gateway timeout. Please try again in a moment.';
+    } else if (error.response?.status === 503) {
+      error.userMessage = 'Service is temporarily unavailable. Please try again shortly.';
+    } else if (!error.response) {
+      error.userMessage = 'Cannot reach the server. Please check your connection and try again.';
+    }
+    return Promise.reject(error);
+  }
+);
 
 /**
  * Upload a prescription image for processing
