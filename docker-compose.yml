@@ -1,0 +1,100 @@
+# Docker Compose for Prescription Reader Microservices
+# Prescription Understanding & Patient Education Assistant
+
+version: '3.8'
+
+services:
+  # API Gateway / BFF
+  gateway:
+    build:
+      context: ./backend
+      dockerfile: gateway/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - OCR_SERVICE_URL=http://ocr-service:8001
+      - DRUG_EXTRACTOR_URL=http://drug-extractor:8002
+      - DRUG_INFO_SERVICE_URL=http://drug-info-service:8003
+      - AUDIT_SERVICE_URL=http://audit-service:8004
+      - LMSTUDIO_BASE_URL=http://host.docker.internal:1234/v1
+    depends_on:
+      - ocr-service
+      - drug-extractor
+      - drug-info-service
+    networks:
+      - prescription-network
+    restart: unless-stopped
+
+  # OCR Service (EasyOCR)
+  ocr-service:
+    build:
+      context: ./backend
+      dockerfile: ocr_service/Dockerfile
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./uploads:/app/uploads
+    environment:
+      - OCR_USE_GPU=false
+    networks:
+      - prescription-network
+    restart: unless-stopped
+
+  # Drug Extractor Service
+  drug-extractor:
+    build:
+      context: ./backend
+      dockerfile: drug_extractor/Dockerfile
+    ports:
+      - "8002:8002"
+    networks:
+      - prescription-network
+    restart: unless-stopped
+
+  # Drug Info Service (LM Studio)
+  drug-info-service:
+    build:
+      context: ./backend
+      dockerfile: drug_info_service/Dockerfile
+    ports:
+      - "8003:8003"
+    environment:
+      - LMSTUDIO_BASE_URL=http://host.docker.internal:1234/v1
+      - LMSTUDIO_CHAT_MODEL=google/gemma-4-e2b
+      - LMSTUDIO_TIMEOUT=120
+    networks:
+      - prescription-network
+    restart: unless-stopped
+
+  # Audit Service
+  audit-service:
+    build:
+      context: ./backend
+      dockerfile: audit_service/Dockerfile
+    ports:
+      - "8004:8004"
+    networks:
+      - prescription-network
+    restart: unless-stopped
+
+  # React Frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - REACT_APP_API_URL=http://localhost:8000
+    depends_on:
+      - gateway
+    networks:
+      - prescription-network
+    restart: unless-stopped
+
+networks:
+  prescription-network:
+    driver: bridge
+
+volumes:
+  uploads:
