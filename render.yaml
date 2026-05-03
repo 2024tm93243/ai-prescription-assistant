@@ -7,9 +7,9 @@ services:
   - type: web
     name: prescription-reader-backend
     env: python
-    region: oregon  # Choose closest region
+    region: oregon # Choose closest region
     plan: free
-    buildCommand: "pip install -r backend/requirements.txt"
+    buildCommand: "apt-get install -y tesseract-ocr tesseract-ocr-eng && pip install --no-cache-dir -r backend/requirements.txt"
     startCommand: "cd backend && chmod +x start.sh && ./start.sh"
     healthCheckPath: /health
     envVars:
@@ -18,7 +18,7 @@ services:
         value: production
       - key: APP_VERSION
         value: "1.0.0"
-      
+
       # LLM Provider Configuration
       - key: LLM_PROVIDER
         value: groq
@@ -28,17 +28,17 @@ services:
         value: 2
       - key: LLM_LOG_LEVEL
         value: info
-      
+
       # Groq Configuration (API key must be added in dashboard)
       - key: GROQ_API_KEY
-        sync: false  # Set manually in dashboard
+        sync: false # Set manually in dashboard
       - key: GROQ_BASE_URL
         value: https://api.groq.com/openai/v1
       - key: GROQ_MODEL
         value: llama-3.3-70b-versatile
       - key: GROQ_TEMPERATURE
         value: 0.3
-      
+
       # Service Ports (Internal)
       - key: GATEWAY_PORT
         value: 8000
@@ -50,7 +50,7 @@ services:
         value: 8003
       - key: AUDIT_SERVICE_PORT
         value: 8004
-      
+
       # Service URLs (localhost for internal communication)
       - key: OCR_SERVICE_URL
         value: http://localhost:8001
@@ -60,19 +60,19 @@ services:
         value: http://localhost:8003
       - key: AUDIT_SERVICE_URL
         value: http://localhost:8004
-      
+
       # OCR Configuration
       - key: OCR_USE_GPU
         value: false
       - key: OCR_LANGUAGES
         value: '["en"]'
-      
+
       # Confidence Thresholds
       - key: CONFIDENCE_HIGH_THRESHOLD
         value: 0.85
       - key: CONFIDENCE_MEDIUM_THRESHOLD
         value: 0.60
-      
+
       # File Handling
       - key: MAX_FILE_SIZE_MB
         value: 10
@@ -80,7 +80,7 @@ services:
         value: /tmp/uploads
       - key: IMAGE_RETENTION_HOURS
         value: 1
-      
+
       # CORS - Update after frontend deployed
       - key: CORS_ORIGINS
         value: '["http://localhost:3000"]'

@@ -1,7 +1,6 @@
 """
 OCR Service - FastAPI microservice for prescription image processing.
-Uses TrOCR (Microsoft Transformer OCR) for handwritten text recognition.
-Falls back to EasyOCR for printed text.
+Uses Tesseract OCR via pytesseract (no GPU required).
 """
 
 from __future__ import annotations
@@ -12,7 +11,6 @@ import sys
 from datetime import datetime
 from typing import List, Tuple, Optional
 
-import cv2
 import numpy as np
 import uvicorn
 from fastapi import FastAPI, File, HTTPException, UploadFile
@@ -42,226 +40,38 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize models (singletons)
-_trocr_processor = None
-_trocr_model = None
-_easyocr_reader = None
+# No heavy model singletons needed — pytesseract calls the system binary directly.
 
 
-def get_trocr_model():
-    """Get or create TrOCR model for handwritten text."""
-    global _trocr_processor, _trocr_model
-    if _trocr_model is None:
-        try:
-            from transformers import TrOCRProcessor, VisionEncoderDecoderModel
-            print("Loading TrOCR handwritten model... (first time may download ~1GB)")
-            _trocr_processor = TrOCRProcessor.from_pretrained("microsoft/trocr-base-handwritten")
-            _trocr_model = VisionEncoderDecoderModel.from_pretrained("microsoft/trocr-base-handwritten")
-            print("TrOCR model loaded successfully!")
-        except Exception as e:
-            print(f"Failed to load TrOCR: {e}")
-            return None, None
-    return _trocr_processor, _trocr_model
-
-
-def get_easyocr_reader():
-    """Get or create EasyOCR reader as fallback."""
-    global _easyocr_reader
-    if _easyocr_reader is None:
-        try:
-            import easyocr
-            _easyocr_reader = easyocr.Reader(
-                settings.OCR_LANGUAGES,
-                gpu=settings.OCR_USE_GPU
-            )
-        except Exception as e:
-            print(f"Failed to load EasyOCR: {e}")
-            return None
-    return _easyocr_reader
-
-
-def preprocess_image(image: np.ndarray) -> Image.Image:
-    """Preprocess image for better OCR results."""
-    # Convert to PIL Image
-    if isinstance(image, np.ndarray):
-        pil_image = Image.fromarray(image)
-    else:
-        pil_image = image
-    
-    # Convert to RGB if needed
-    if pil_image.mode != "RGB":
-        pil_image = pil_image.convert("RGB")
-    
-    # Resize if too small
-    width, height = pil_image.size
-    min_dim = 384  # TrOCR works well with this size
-    if width < min_dim or height < min_dim:
-        scale = max(min_dim / width, min_dim / height)
-        new_size = (int(width * scale), int(height * scale))
-        pil_image = pil_image.resize(new_size, Image.Resampling.LANCZOS)
-    
-    return pil_image
-
-
-def extract_text_regions(image: np.ndarray) -> List[Tuple[np.ndarray, List]]:
+def ocr_with_pytesseract(image: np.ndarray) -> List[Tuple[str, float, List]]:
     """
-    Extract text regions from image using contour detection.
-    Returns list of (cropped_image, bbox) tuples.
-    """
-    # Convert to grayscale
-    if len(image.shape) == 3:
-        gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-    else:
-        gray = image.copy()
-    
-    # Apply adaptive thresholding
-    binary = cv2.adaptiveThreshold(
-        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2
-    )
-    
-    # Dilate to connect text components
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (30, 5))
-    dilated = cv2.dilate(binary, kernel, iterations=2)
-    
-    # Find contours
-    contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    regions = []
-    height, width = image.shape[:2]
-    
-    for contour in contours:
-        x, y, w, h = cv2.boundingRect(contour)
-        
-        # Filter out very small or very large regions
-        if w < 20 or h < 10 or w > width * 0.95 or h > height * 0.5:
-            continue
-        
-        # Add padding
-        pad = 10
-        x1 = max(0, x - pad)
-        y1 = max(0, y - pad)
-        x2 = min(width, x + w + pad)
-        y2 = min(height, y + h + pad)
-        
-        cropped = image[y1:y2, x1:x2]
-        bbox = [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
-        regions.append((cropped, bbox))
-    
-    # Sort by vertical position (top to bottom)
-    regions.sort(key=lambda r: r[1][0][1])
-    
-    # If no regions found, return the whole image
-    if not regions:
-        bbox = [[0, 0], [width, 0], [width, height], [0, height]]
-        regions = [(image, bbox)]
-    
-    return regions
-
-
-def ocr_with_trocr(image: np.ndarray) -> List[Tuple[str, float, List]]:
-    """
-    Run TrOCR on image regions for handwritten text.
+    Run Tesseract OCR on image.
     Returns list of (text, confidence, bbox).
+    Tesseract needs no GPU and has zero heavy dependencies.
     """
-    processor, model = get_trocr_model()
-    if processor is None or model is None:
-        return []
-    
-    import torch
-    
-    results = []
-    regions = extract_text_regions(image)
-    
-    for region_img, bbox in regions:
-        try:
-            # Preprocess
-            pil_img = preprocess_image(region_img)
-            
-            # Run TrOCR
-            pixel_values = processor(pil_img, return_tensors="pt").pixel_values
-            
-            with torch.no_grad():
-                generated_ids = model.generate(
-                    pixel_values,
-                    max_length=64,
-                    num_beams=4,
-                    early_stopping=True
-                )
-            
-            text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
-            text = text.strip()
-            
-            if text and len(text) > 1:
-                # TrOCR doesn't provide confidence, estimate based on text quality
-                confidence = 0.85 if len(text) > 3 else 0.6
-                results.append((text, confidence, bbox))
-                
-        except Exception as e:
-            print(f"TrOCR error on region: {e}")
-            continue
-    
-    return results
-
-
-def ocr_with_easyocr(image: np.ndarray) -> List[Tuple[str, float, List]]:
-    """Run EasyOCR on image (fallback for printed text)."""
-    reader = get_easyocr_reader()
-    if reader is None:
-        return []
-    
     try:
-        results = reader.readtext(
-            image,
-            detail=1,
-            paragraph=False,
-            min_size=10,
-            text_threshold=0.5,
-            low_text=0.3
-        )
-        
-        processed = []
-        for bbox, text, conf in results:
-            cleaned = text.strip()
-            if cleaned and len(cleaned) > 0:
-                processed.append((cleaned, float(conf), bbox))
-        
-        return processed
+        import pytesseract
+        pil_image = Image.fromarray(image)
+        # Enhance contrast for better handwriting recognition
+        pil_image = pil_image.convert("L")  # Greyscale
+        data = pytesseract.image_to_data(pil_image, output_type=pytesseract.Output.DICT)
+        results: List[Tuple[str, float, List]] = []
+        for i in range(len(data["text"])):
+            text = data["text"][i].strip()
+            conf = int(data["conf"][i])
+            if text and conf > 0:
+                x, y, w, h = data["left"][i], data["top"][i], data["width"][i], data["height"][i]
+                bbox = [[x, y], [x + w, y], [x + w, y + h], [x, y + h]]
+                results.append((text, conf / 100.0, bbox))
+        return results
     except Exception as e:
-        print(f"EasyOCR error: {e}")
+        print(f"Pytesseract error: {e}")
         return []
 
 
 def process_image(image: np.ndarray) -> List[Tuple[str, float, List]]:
-    """
-    Process image with TrOCR (handwritten) and EasyOCR (printed).
-    Returns combined results with best matches.
-    """
-    # Try TrOCR first (better for handwriting)
-    trocr_results = ocr_with_trocr(image)
-    
-    # Also try EasyOCR
-    easyocr_results = ocr_with_easyocr(image)
-    
-    # If TrOCR got results, prefer them for handwriting
-    if trocr_results:
-        # Combine: TrOCR results + any EasyOCR results not overlapping
-        combined = trocr_results.copy()
-        
-        # Add EasyOCR results that don't overlap with TrOCR
-        for er_text, er_conf, er_bbox in easyocr_results:
-            overlaps = False
-            for tr_text, _, tr_bbox in trocr_results:
-                # Simple overlap check
-                if er_text.lower() in tr_text.lower() or tr_text.lower() in er_text.lower():
-                    overlaps = True
-                    break
-            if not overlaps:
-                combined.append((er_text, er_conf, er_bbox))
-        
-        return combined
-    
-    # Fall back to EasyOCR only
-    return easyocr_results
+    """Process image with Tesseract OCR."""
+    return ocr_with_pytesseract(image)
 
 
 def load_image_from_bytes(data: bytes) -> np.ndarray:
@@ -298,8 +108,8 @@ async def health_check():
 async def perform_ocr(file: UploadFile = File(...)):
     """
     Process uploaded prescription image with OCR.
-    Uses TrOCR for handwritten text and EasyOCR as fallback.
-    
+    Uses Tesseract OCR (no GPU required).
+
     Accepts: JPG, PNG, BMP, TIFF, PDF
     Returns: Extracted text with per-line confidence scores
     """
