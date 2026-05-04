@@ -1,21 +1,20 @@
 """
 OCR Service - FastAPI microservice for prescription image processing.
-Uses Tesseract OCR via pytesseract (no GPU required).
+Uses Groq vision LLM for OCR (no system dependencies or GPU required).
 """
 
 from __future__ import annotations
 
+import base64
 import io
 import os
 import sys
 from datetime import datetime
-from typing import List, Tuple, Optional
+from typing import List, Tuple
 
-import numpy as np
 import uvicorn
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from PIL import Image
 
 # Add parent directory to path for shared imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -27,8 +26,8 @@ settings = get_settings()
 
 app = FastAPI(
     title="OCR Service",
-    description="TrOCR + EasyOCR prescription image processing service",
-    version="1.0.0",
+    description="Prescription OCR via Groq vision LLM — no system dependencies",
+    version="2.0.0",
 )
 
 # CORS middleware
@@ -40,58 +39,104 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# No heavy model singletons needed — pytesseract calls the system binary directly.
+# Vision model — Groq multimodal model for handwritten OCR
+VISION_OCR_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+
+_CONTENT_TYPES = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".bmp": "image/bmp",
+    ".tiff": "image/tiff",
+    ".tif": "image/tiff",
+}
 
 
-def ocr_with_pytesseract(image: np.ndarray) -> List[Tuple[str, float, List]]:
+async def ocr_with_vision_llm(
+    image_bytes: bytes, content_type: str = "image/jpeg"
+) -> List[Tuple[str, float, List]]:
     """
-    Run Tesseract OCR on image.
-    Returns list of (text, confidence, bbox).
-    Tesseract needs no GPU and has zero heavy dependencies.
+    Send image to Groq vision LLM and return extracted text lines.
+    Returns list of (text, confidence, bbox) tuples.
+    No system packages or GPU required.
     """
-    try:
-        import pytesseract
-        pil_image = Image.fromarray(image)
-        # Enhance contrast for better handwriting recognition
-        pil_image = pil_image.convert("L")  # Greyscale
-        data = pytesseract.image_to_data(pil_image, output_type=pytesseract.Output.DICT)
-        results: List[Tuple[str, float, List]] = []
-        for i in range(len(data["text"])):
-            text = data["text"][i].strip()
-            conf = int(data["conf"][i])
-            if text and conf > 0:
-                x, y, w, h = data["left"][i], data["top"][i], data["width"][i], data["height"][i]
-                bbox = [[x, y], [x + w, y], [x + w, y + h], [x, y + h]]
-                results.append((text, conf / 100.0, bbox))
-        return results
-    except Exception as e:
-        print(f"Pytesseract error: {e}")
-        return []
+    import httpx
+
+    if not settings.GROQ_API_KEY:
+        raise HTTPException(
+            status_code=500,
+            detail="GROQ_API_KEY is not set. Add it in Render environment variables.",
+        )
+
+    b64 = base64.b64encode(image_bytes).decode("utf-8")
+
+    payload = {
+        "model": VISION_OCR_MODEL,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{content_type};base64,{b64}"},
+                    },
+                    {
+                        "type": "text",
+                        "text": (
+                            "Extract all the text visible in this prescription image. "
+                            "Return each line of text on a separate line. "
+                            "Output only the extracted text, no explanations."
+                        ),
+                    },
+                ],
+            }
+        ],
+        "max_tokens": 512,
+        "temperature": 0.1,
+    }
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        resp = await client.post(
+            f"{settings.GROQ_BASE_URL}/chat/completions",
+            json=payload,
+            headers={
+                "Authorization": f"Bearer {settings.GROQ_API_KEY}",
+                "Content-Type": "application/json",
+            },
+        )
+
+    if resp.status_code != 200:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Vision OCR error ({resp.status_code}): {resp.text[:400]}",
+        )
+
+    extracted = resp.json()["choices"][0]["message"]["content"].strip()
+
+    results: List[Tuple[str, float, List]] = []
+    for line in extracted.splitlines():
+        line = line.strip()
+        if line:
+            results.append((line, 0.90, []))
+    return results
 
 
-def process_image(image: np.ndarray) -> List[Tuple[str, float, List]]:
-    """Process image with Tesseract OCR."""
-    return ocr_with_pytesseract(image)
-
-
-def load_image_from_bytes(data: bytes) -> np.ndarray:
-    """Load image from bytes into numpy array."""
-    image = Image.open(io.BytesIO(data)).convert("RGB")
-    return np.array(image)
-
-
-def load_pdf_pages(data: bytes) -> List[np.ndarray]:
-    """Load PDF pages as images."""
+def pdf_pages_to_jpeg_bytes(data: bytes) -> List[bytes]:
+    """Convert PDF pages to JPEG bytes for vision LLM."""
     try:
         from pdf2image import convert_from_bytes
     except ImportError:
         raise HTTPException(
             status_code=500,
-            detail="pdf2image is required for PDF processing"
+            detail="pdf2image is required for PDF processing",
         )
-    
-    pages = convert_from_bytes(data, dpi=300)
-    return [np.array(page.convert("RGB")) for page in pages]
+    pages = convert_from_bytes(data, dpi=200)
+    result = []
+    for page in pages:
+        buf = io.BytesIO()
+        page.convert("RGB").save(buf, format="JPEG", quality=90)
+        result.append(buf.getvalue())
+    return result
 
 
 @app.get("/health", response_model=HealthStatus)
@@ -100,101 +145,82 @@ async def health_check():
     return HealthStatus(
         service=SERVICE_NAMES["ocr"],
         status="healthy",
-        version="1.0.0"
+        version="2.0.0",
     )
 
 
 @app.post("/ocr", response_model=OCRResult)
 async def perform_ocr(file: UploadFile = File(...)):
     """
-    Process uploaded prescription image with OCR.
-    Uses Tesseract OCR (no GPU required).
-
+    Process uploaded prescription image with OCR using Groq vision LLM.
     Accepts: JPG, PNG, BMP, TIFF, PDF
-    Returns: Extracted text with per-line confidence scores
+    Returns: Extracted text with per-line confidence scores.
     """
-    # Validate file extension
     filename = file.filename or "unknown"
     ext = os.path.splitext(filename)[1].lower()
-    
+
     if ext not in settings.ALLOWED_EXTENSIONS:
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported file type: {ext}. Allowed: {settings.ALLOWED_EXTENSIONS}"
+            detail=f"Unsupported file type: {ext}. Allowed: {settings.ALLOWED_EXTENSIONS}",
         )
-    
-    # Read file content
+
     try:
         content = await file.read()
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to read file: {str(e)}")
-    
-    # Check file size
+
     if len(content) > settings.MAX_FILE_SIZE_MB * 1024 * 1024:
         raise HTTPException(
             status_code=400,
-            detail=f"File too large. Maximum size: {settings.MAX_FILE_SIZE_MB}MB"
+            detail=f"File too large. Maximum size: {settings.MAX_FILE_SIZE_MB}MB",
         )
-    
-    # Load images
-    try:
-        if ext == ".pdf":
-            images = load_pdf_pages(content)
-        else:
-            images = [load_image_from_bytes(content)]
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to load image: {str(e)}")
-    
-    # Process all pages
+
     all_lines: List[OCRLine] = []
     all_confidences: List[float] = []
-    
+    page_count = 1
+
     try:
-        for image in images:
-            results = process_image(image)
-            for text, conf, bbox in results:
-                all_lines.append(OCRLine(
-                    text=text,
-                    confidence=conf,
-                    bbox=bbox if isinstance(bbox, list) else None
-                ))
+        if ext == ".pdf":
+            pages = pdf_pages_to_jpeg_bytes(content)
+            page_count = len(pages)
+            for page_bytes in pages:
+                for text, conf, _ in await ocr_with_vision_llm(page_bytes, "image/jpeg"):
+                    all_lines.append(OCRLine(text=text, confidence=conf))
+                    all_confidences.append(conf)
+        else:
+            content_type = _CONTENT_TYPES.get(ext, "image/jpeg")
+            for text, conf, _ in await ocr_with_vision_llm(content, content_type):
+                all_lines.append(OCRLine(text=text, confidence=conf))
                 all_confidences.append(conf)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"OCR processing failed: {str(e)}")
-    
-    # Calculate average confidence
+
     avg_confidence = sum(all_confidences) / len(all_confidences) if all_confidences else 0.0
-    
-    # Build raw text
     raw_text = "\n".join(line.text for line in all_lines)
-    
+
     return OCRResult(
         filename=filename,
-        page_count=len(images),
+        page_count=page_count,
         lines=all_lines,
         average_confidence=avg_confidence,
         raw_text=raw_text,
-        processed_at=datetime.utcnow()
+        processed_at=datetime.utcnow(),
     )
 
 
 @app.post("/ocr/text-only")
 async def perform_ocr_text_only(file: UploadFile = File(...)):
-    """
-    Simplified OCR endpoint returning only text and average confidence.
-    """
+    """Simplified endpoint returning only text and average confidence."""
     result = await perform_ocr(file)
     return {
         "text": result.raw_text,
         "confidence": result.average_confidence,
-        "line_count": len(result.lines)
+        "line_count": len(result.lines),
     }
 
 
 if __name__ == "__main__":
-    uvicorn.run(
-        "main_trocr:app",
-        host="0.0.0.0",
-        port=settings.OCR_SERVICE_PORT,
-        reload=True
-    )
+    uvicorn.run("main:app", host="0.0.0.0", port=settings.OCR_SERVICE_PORT, reload=True)

@@ -9,10 +9,8 @@ pydantic-settings==2.1.0
 httpx==0.25.2
 requests==2.31.0
 
-# OCR - pytesseract uses the system tesseract binary (no torch/GPU needed)
-pytesseract==0.3.13
+# OCR - uses Groq vision LLM (no system binary or GPU required)
 Pillow==10.1.0
-opencv-python-headless==4.8.1.78
 
 # Fuzzy string matching
 python-Levenshtein==0.23.0
